@@ -12,6 +12,7 @@ import (
 type Info struct {
 	UserInfo User
 	TaskList TaskList
+	Session  uuid.UUID
 }
 
 var info Info
@@ -55,8 +56,25 @@ func login(w http.ResponseWriter, r *http.Request) {
 	var user User
 	_ = json.Unmarshal(body, &user)
 
-	info.UserInfo = user
+	// DBからUser情報を取得して比較
+	if !reflect.DeepEqual(user, info.UserInfo) {
+		handleError(w, http.StatusUnauthorized)
+		return
+	}
 
+	sessionId, err := uuid.NewUUID()
+	if err != nil {
+		handleError(w, http.StatusBadRequest)
+		return
+	}
+	info.Session = sessionId
+
+	cookie := &http.Cookie{
+		Name: "session_id",
+		// セッションID
+		Value: sessionId.String(),
+	}
+	http.SetCookie(w, cookie)
 	fmt.Fprintln(w, "")
 }
 
@@ -77,30 +95,62 @@ func postTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user := req.User
-	if !reflect.DeepEqual(user, info.UserInfo) {
+	cookie, err := r.Cookie("session_id")
+	if err != nil {
 		handleError(w, http.StatusBadRequest)
 		return
 	}
 
-	id, err := uuid.NewUUID()
+	if cookie.Value != info.Session.String() {
+		// セッションがエラーの時は Status Code は？
+		handleError(w, http.StatusBadRequest)
+		return
+	}
+
+	taskId, err := uuid.NewUUID()
 	if err != nil {
 		handleError(w, http.StatusBadRequest)
 		return
 	}
 
 	task := req.Task
-	task.ID = id
+	task.ID = taskId
 	info.TaskList.Contents = append(info.TaskList.Contents, task)
 
-	fmt.Fprint(w, id)
+	fmt.Fprint(w, taskId)
 }
 
 func getTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		handleError(w, http.StatusBadRequest)
+		return
+	}
 
+	for _, v := range info.TaskList.Contents {
+		if v.ID.String() == id {
+			res, err := json.Marshal(v)
+			if err != nil {
+				handleError(w, http.StatusInternalServerError)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			fmt.Fprint(w, string(res))
+			return
+		}
+	}
+
+	handleError(w, http.StatusNotFound)
+	return
 }
 
 func main() {
+
+	info.UserInfo = User{
+		Password: "password123",
+		UserName: "testuser",
+	}
 
 	server := http.Server{
 		Addr:    ":8080",
@@ -110,7 +160,7 @@ func main() {
 	http.HandleFunc("/ping", ping)
 	http.HandleFunc("/login", login)
 	http.HandleFunc("POST /task", postTask)
-	http.HandleFunc("GET /task/id", getTask)
+	http.HandleFunc("GET /task/{id}", getTask)
 
 	server.ListenAndServe()
 }
